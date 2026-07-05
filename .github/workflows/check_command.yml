@@ -49,3 +49,4 @@ jobs:
             git pull --rebase origin HEAD
             sleep 3
           done
+
