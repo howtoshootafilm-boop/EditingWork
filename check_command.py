@@ -162,8 +162,13 @@ def normalize_channel(raw):
 
 
 def channel_has_public_preview(username):
-    """Проверяет, что t.me/s/<username> открывается и там реально виден канал/посты
-    (а не 'канал не найден' или отключённый публичный просмотр)."""
+    """Проверяет, что t.me/s/<username> открывается и там реально видны ПОСТЫ
+    (а не только карточка "о канале"). Важно проверять именно наличие постов
+    (tgme_widget_message), а не только tgme_channel_info — эта карточка есть
+    почти у любого канала/чата, даже у групп-обсуждений и у каналов, которые
+    отключили показ истории сообщений в публичном превью. Без реальных постов
+    бот физически не сможет взять оттуда ни одной вакансии, даже если канал
+    технически "открывается"."""
     url = f"https://t.me/s/{username}"
     try:
         req = urllib.request.Request(
@@ -173,7 +178,7 @@ def channel_has_public_preview(username):
             html = resp.read().decode("utf-8", errors="ignore")
     except Exception:
         return False
-    return ("tgme_widget_message" in html) or ("tgme_channel_info" in html)
+    return "tgme_widget_message" in html
 
 
 def handle_add_channel(text_raw):
