@@ -35,19 +35,23 @@
 
 ## Шаг 4. Загрузить файлы
 
+Все файлы бота (`main.py`, `check_command.py`, `requirements.txt`, `seen.json`, `sources.json`,
+`update_offset.json`) загружаются прямо в корень репозитория, без отдельной папки — так же,
+как обычные файлы. Отдельная папка нужна только для двух workflow-файлов: GitHub требует,
+чтобы они лежали строго по пути `.github/workflows/`.
+
 1. На странице репозитория нажмите «Add file» → «Upload files».
-2. Перетащите в окно браузера всю папку `vacancy_bot` целиком (вместе с вложенной папкой `.github`) — так, как она у вас есть после скачивания.
-   - Если GitHub не даёт загрузить папку с подпапками через браузер, загрузите файлы по отдельности, вручную создав такую же структуру:
-     ```
-     vacancy_bot/main.py
-     vacancy_bot/check_command.py
-     vacancy_bot/requirements.txt
-     vacancy_bot/seen.json
-     vacancy_bot/sources.json
-     vacancy_bot/update_offset.json
-     .github/workflows/vacancy_digest.yml
-     .github/workflows/check_command.yml
-     ```
+2. Перетащите в окно браузера файлы `main.py`, `check_command.py`, `requirements.txt`,
+   `seen.json`, `sources.json`, `update_offset.json` — все сразу, прямо в корень. Нажмите
+   «Commit changes».
+3. Ещё раз «Add file» → «Upload files». На этот раз перетащите папку `.github` целиком
+   (внутри неё — `workflows/vacancy_digest.yml` и `workflows/check_command.yml`). Если браузер
+   не даёт перетащить папку с вложенными подпапками — создайте путь вручную: нажмите
+   «Add file» → «Create new file», в поле имени файла впишите полный путь
+   `.github/workflows/vacancy_digest.yml` (GitHub сам создаст нужные папки), вставьте
+   содержимое файла, «Commit changes». Повторите то же для `check_command.yml`.
+4. Проверьте на главной странице репозитория, что видна папка `.github` — без неё
+   расписание работать не будет (вкладка Actions будет пустой).
 3. Нажмите «Commit changes» внизу страницы.
 
 ## Шаг 5. Добавить секреты (токен и chat_id)
