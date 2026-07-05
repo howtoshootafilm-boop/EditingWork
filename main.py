@@ -183,10 +183,21 @@ USD_RE = re.compile(
     re.IGNORECASE,
 )
 # Цифра + слово "тысяч(а/и)" без явной валюты рядом — "135 тысяч", "20 тысяч рублей".
-# В контексте вакансии это всегда рубли, отдельная валюта не нужна.
+# В контексте вакансии это ЧАСТО рубли, но не всегда — то же самое пишут про размер
+# аудитории ("500 тысяч подписчиков", "10 тысяч просмотров"). Такие случаи отсеиваем
+# отдельно через NON_MONEY_UNIT_RE сразу после совпадения (см. _find_all_rub_amounts).
 DIGIT_THOUSAND_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*тысяч[а-яё]*", re.IGNORECASE)
 # Сокращения "тысяч" — "50т.р.", "50 т.р.", "50тыс", "50 тыс."
 ABBREV_THOUSAND_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*(?:т\.?\s?р\.?|тыс\.?)\b", re.IGNORECASE)
+
+# Если сразу после "N тысяч/тыс" идёт одно из этих слов — речь про размер аудитории/
+# охваты, а не про деньги ("500 тысяч подписчиков", "10 тыс. просмотров"). Такие
+# совпадения не считаем ценой, даже если рядом больше ничего про валюту не сказано.
+NON_MONEY_AFTER_THOUSAND_RE = re.compile(
+    r"[.,]?\s*(?:подписчик|просмотр|лайк|репост|коммент|зритель|человек|участник|"
+    r"юзер|фолловер|follower|подпис)",
+    re.IGNORECASE,
+)
 
 # Числа, записанные словами (без цифр вообще) — "пять тысяч", "полторы тысячи",
 # "двадцать тысяч рублей". Разбираем только диапазон, реалистичный для цены за
@@ -239,7 +250,12 @@ def find_word_prices_rub(text):
     i = 0
     while i < len(words):
         tok = words[i].group(0).lower()
-        if tok in RU_UNITS or tok in RU_HALF or tok.startswith("тысяч"):
+        # Начинать разбор можно только с настоящего слова-числительного (пять,
+        # двадцать, полторы...), НЕ с голого "тысяч" — иначе фразы вида "500+ тысяч
+        # подписчиков"/"10 тысяч просмотров" (число написано цифрой, "тысяч" просто
+        # следующее слово) ошибочно засчитываются как "тысяча рублей" = 1000.
+        # Настоящие цифровые "N тысяч" уже отдельно ловит DIGIT_THOUSAND_RE.
+        if tok in RU_UNITS or tok in RU_HALF:
             run = []
             j = i
             while j < len(words):
@@ -255,7 +271,10 @@ def find_word_prices_rub(text):
                 end_pos = words[j - 1].end()
                 tail = text[end_pos:end_pos + 20].lower()
                 has_currency_after = bool(re.match(r"\s*(₽|руб[а-яё]*\.?|р\.?\b)", tail))
-                if has_thousand or has_currency_after:
+                # "пятьсот тысяч подписчиков/просмотров" и т.п. — это охваты, не деньги,
+                # даже если рядом нет явной валюты.
+                is_audience_size = bool(NON_MONEY_AFTER_THOUSAND_RE.match(text, end_pos))
+                if (has_thousand or has_currency_after) and not is_audience_size:
                     results.append(int(value))
             i = j
         else:
@@ -280,10 +299,14 @@ def _find_all_rub_amounts(text):
         if v is not None:
             values.append(v)
     for m in DIGIT_THOUSAND_RE.finditer(text):
+        if NON_MONEY_AFTER_THOUSAND_RE.match(text, m.end()):
+            continue  # "500 тысяч подписчиков/просмотров" и т.п. — не цена
         v = _to_float(m.group(1))
         if v is not None:
             values.append(int(v * 1000))
     for m in ABBREV_THOUSAND_RE.finditer(text):
+        if NON_MONEY_AFTER_THOUSAND_RE.match(text, m.end()):
+            continue
         v = _to_float(m.group(1))
         if v is not None:
             values.append(int(v * 1000))
