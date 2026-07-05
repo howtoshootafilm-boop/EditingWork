@@ -1,0 +1,56 @@
+name: Vacancy digest
+
+on:
+  schedule:
+    # 10:00 и 18:00 по Москве (МСК = UTC+3, круглый год без перевода времени)
+    - cron: "0 7,15 * * *"
+  workflow_dispatch: {}   # позволяет запустить вручную кнопкой "Run workflow" для теста
+
+permissions:
+  contents: write   # нужно, чтобы бот мог сохранять seen.json обратно в репозиторий
+
+# Не даём двум запускам этого workflow работать одновременно (например, расписание
+# 10:00/18:00 совпало с ручным запуском или с командой "обновить") — второй просто
+# подождёт своей очереди, а не будет мешать первому при сохранении seen.json.
+concurrency:
+  group: vacancy-digest
+  cancel-in-progress: false
+
+jobs:
+  run-digest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Playwright (нужен только для Kwork)
+        run: |
+          pip install -r requirements.txt
+          python -m playwright install --with-deps chromium
+
+      - name: Run digest script
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+        run: python main.py
+
+      - name: Save updated seen.json
+        run: |
+          git config user.name "vacancy-digest-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add seen.json
+          git diff --quiet --cached || git commit -m "chore: update seen vacancies list [skip ci]"
+          # check_command.yml тоже коммитит в этот репозиторий (update_offset.json,
+          # sources.json) — если он успел запушить между нашим checkout и этим шагом,
+          # обычный push будет отклонён. Подтягиваем свежие изменения и пробуем снова.
+          for i in 1 2 3 4 5; do
+            git push && break
+            echo "Push не прошёл (кто-то запушил раньше) — подтягиваю изменения и пробую снова ($i/5)…"
+            git pull --rebase origin HEAD
+            sleep 3
+          done
