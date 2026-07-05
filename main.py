@@ -40,6 +40,7 @@ import re
 import sys
 import time
 import urllib.parse
+from datetime import datetime, timedelta, timezone
 import urllib.request
 
 # ============ CONFIG ============
@@ -148,6 +149,13 @@ DUPLICATE_SIMILARITY_THRESHOLD = 0.85
 # Сколько последних отпечатков хранить между запусками (ограничивает размер seen.json
 # и время сравнения — сравнивать с вакансиями недельной давности смысла нет).
 MAX_STORED_FINGERPRINTS = 500
+
+# Не показывать посты из Telegram-каналов старше этого числа дней. Без этой проверки
+# на первом запуске (или если канал редко публикует новое) бот мог отправить вакансию
+# многомесячной давности — она почти наверняка уже закрыта, а выглядит как "новая",
+# потому что бот её просто раньше не видел. По запросу Лии — только вакансии за
+# последние сутки.
+MAX_POST_AGE_DAYS = 1
 
 
 # ============ HTTP helper (без внешних библиотек) ============
@@ -409,9 +417,60 @@ def price_passes_threshold(amount, currency):
     return False
 
 
+# Если одна из этих ролей упоминается в тексте РАНЬШЕ, чем любое слово про монтаж —
+# похоже, вакансия в первую очередь про эту роль, а монтаж лишь смежный/бонусный навык,
+# упомянутый после. Порядок упоминания, а не фиксированное число символов, — так это
+# работает одинаково независимо от того, длинное ли вступление у поста (эмодзи,
+# приветствие и т.п. перед сутью вакансии).
+EXCLUDE_ROLE_KEYWORDS = [
+    "сценарист",
+    "смм-менеджер", "смм менеджер", "smm-менеджер", "smm менеджер",
+    "менеджер по смм", "smm-специалист", "смм-специалист",
+    "ии-креатор", "ai-креатор", "ии креатор", "ai creator",
+]
+
+# Признаки короткого вертикального формата — если они есть, пост подходит даже
+# при упоминании длительности/подкаста/вебинара (значит это, например, нарезка
+# длинного видео на шортсы, а не монтаж самого длинного ролика).
+SHORT_FORM_RE = re.compile(
+    r"reels?|shorts?|рилс\w*|шортс\w*|tiktok|тикток|вертикальн\w*|коротк\w*\s*(?:видео|формат|ролик)",
+    re.IGNORECASE,
+)
+
+# Явные признаки НЕподходящего формата: длинный хронометраж в минутах, подкаст/вебинар,
+# явное упоминание длинного формата, или явно горизонтальное видео. Мой сервис — только
+# вертикальный короткий формат, поэтому такие вакансии исключаем, если только рядом нет
+# явного признака короткого формата (см. SHORT_FORM_RE) — тогда это, скорее всего, речь
+# о нарезке длинного видео НА шортсы, что как раз подходит.
+FORMAT_EXCLUDE_RE = re.compile(
+    r"\d{1,3}\s*-\s*\d{1,3}\s*минут\w*|\d{1,3}\s*минут\w*|подкаст\w*|вебинар\w*|"
+    r"длинн\w*\s*формат\w*|горизонтальн\w*",
+    re.IGNORECASE,
+)
+
+
 def is_relevant(text):
     low = text.lower()
-    return any(kw in low for kw in KEYWORDS)
+    if not any(kw in low for kw in KEYWORDS):
+        return False
+
+    montage_positions = [low.find(kw) for kw in KEYWORDS if kw in low]
+    montage_idx = min(montage_positions) if montage_positions else None
+
+    role_positions = [low.find(role) for role in EXCLUDE_ROLE_KEYWORDS if role in low]
+    if role_positions:
+        role_idx = min(role_positions)
+        if montage_idx is None or role_idx < montage_idx:
+            # роль (сценарист/смм/ии-креатор) упомянута раньше монтажа — похоже,
+            # это основная задача вакансии, а монтаж лишь смежный навык
+            return False
+
+    if FORMAT_EXCLUDE_RE.search(low) and not SHORT_FORM_RE.search(low):
+        # длинный формат / подкаст / вебинар / горизонтальное видео без признаков
+        # короткого вертикального формата — не наш профиль
+        return False
+
+    return True
 
 
 def clean_text(text, limit=500):
@@ -569,6 +628,32 @@ def is_duplicate_content(fingerprint, known_fingerprints):
 
 # ============ Источник: публичные Telegram-каналы ============
 
+# Telegram отдаёт время каждого поста прямо в HTML: <time datetime="2026-07-04T10:00:00+00:00">.
+POST_TIME_RE = re.compile(r'<time[^>]*\sdatetime="([^"]+)"')
+
+
+def parse_post_datetime(block):
+    """Возвращает datetime поста (по данным самого Telegram) или None, если не нашли."""
+    m = POST_TIME_RE.search(block)
+    if not m:
+        return None
+    raw = m.group(1)
+    try:
+        return datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+
+
+def is_too_old(post_dt):
+    """True, если пост старше MAX_POST_AGE_DAYS — почти наверняка вакансия уже закрыта."""
+    if post_dt is None:
+        return False  # дату не нашли — не отбрасываем вслепую, пусть решают остальные фильтры
+    now = datetime.now(timezone.utc)
+    if post_dt.tzinfo is None:
+        post_dt = post_dt.replace(tzinfo=timezone.utc)
+    return (now - post_dt) > timedelta(days=MAX_POST_AGE_DAYS)
+
+
 def fetch_telegram_channel(channel):
     """Возвращает список (uid, link, text) из публичной веб-версии канала."""
     url = f"https://t.me/s/{channel}"
@@ -584,6 +669,13 @@ def fetch_telegram_channel(channel):
         if not m_id:
             continue
         post_id = m_id.group(1)
+
+        # Отбрасываем слишком старые посты ещё до разбора текста — нет смысла тратить
+        # время на вакансию многомесячной давности, она почти наверняка уже закрыта.
+        post_dt = parse_post_datetime(block)
+        if is_too_old(post_dt):
+            continue
+
         m_text = re.search(
             r'<div class="tgme_widget_message_text[^"]*"[^>]*>(.*?)</div>',
             block,
